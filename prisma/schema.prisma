@@ -1,25 +1,12 @@
 // File: prisma/schema.prisma
 generator client {
   provider      = "prisma-client-js"
-  binaryTargets = ["native", "windows", "linux-musl"]
+  binaryTargets = ["native"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-}
-
-model Call {
-  id         String   @id @default(uuid())
-  to         String
-  scriptId   String
-  metadata   Json?
-  status     CallStatus @default(PENDING)
-  attempts   Int      @default(0)
-  lastError  String?
-  createdAt  DateTime @default(now())
-  startedAt  DateTime?
-  endedAt    DateTime?
 }
 
 enum CallStatus {
@@ -28,4 +15,17 @@ enum CallStatus {
   COMPLETED
   FAILED
   EXPIRED
+}
+
+model Call {
+  id         String     @id @default(uuid())
+  to         String
+  scriptId   String
+  metadata   Json?
+  status     CallStatus @default(PENDING)
+  attempts   Int        @default(0)
+  lastError  String?
+  createdAt  DateTime   @default(now())
+  startedAt  DateTime?
+  endedAt    DateTime?
 }
