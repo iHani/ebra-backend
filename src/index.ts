@@ -1,7 +1,8 @@
-// File: src/index.ts
 import express from 'express';
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
+import callsRouter from './api/calls';
+import callbacksRouter from './api/callbacks';
 
 dotenv.config();
 
@@ -11,8 +12,17 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-app.get('/health', (req, res) => {
-    res.send({ status: 'ok' });
+// Versioned routes
+app.use('/api/v1/calls', callsRouter);
+app.use('/api/v1/callbacks', callbacksRouter);
+
+// Health check
+app.get('/health', (_, res) => res.json({ status: 'ok' }));
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+    await prisma.$disconnect();
+    process.exit(0);
 });
 
 app.listen(PORT, () => {
