@@ -1,16 +1,26 @@
-import { PrismaClient, CallStatus } from '@prisma/client';
+import { PrismaClient, Call, CallStatus } from '@prisma/client';
+import axios, { AxiosResponse } from 'axios';
 
 const prisma = new PrismaClient();
-const MAX_CONCURRENT_CALLS = 30;
 
-async function getActiveCallCount() {
-    return await prisma.call.count({
+const MAX_CONCURRENT_CALLS = 30;
+const WEBHOOK_URL: string = process.env.WEBHOOK_URL!;
+const AI_PROVIDER_URL: string = process.env.AI_PROVIDER_URL!;
+
+/**
+ * Count the number of active (in-progress) calls.
+ */
+async function getActiveCallCount(): Promise<number> {
+    return prisma.call.count({
         where: { status: CallStatus.IN_PROGRESS },
     });
 }
 
-async function fetchNextPendingCall() {
-    const result = await prisma.$transaction(async (tx) => {
+/**
+ * Atomically fetch the next pending call and mark it as in-progress.
+ */
+async function fetchNextPendingCall(): Promise<Call | null> {
+    return prisma.$transaction(async (tx) => {
         const next = await tx.call.findFirst({
             where: { status: CallStatus.PENDING },
             orderBy: { createdAt: 'asc' },
@@ -18,40 +28,46 @@ async function fetchNextPendingCall() {
 
         if (!next) return null;
 
-        const updated = await tx.call.update({
+        return tx.call.update({
             where: { id: next.id },
             data: {
                 status: CallStatus.IN_PROGRESS,
                 startedAt: new Date(),
             },
         });
-
-        return updated;
     });
-
-    return result;
 }
 
-async function processCall(call: any) {
+/**
+ * Process a single call: send to AI provider and handle retries or failures.
+ */
+async function processCall(call: Call): Promise<void> {
     try {
+        const response: AxiosResponse = await axios.post(AI_PROVIDER_URL, {
+            to: call.to,
+            scriptId: call.scriptId,
+            webhookUrl: WEBHOOK_URL,
+        });
 
-        console.log(`Simulating call to ${call.to}...`);
-        await new Promise((res) => setTimeout(res, 500)); // simulate network delay
-        console.log(`Simulated call started for ${call.id}`);
+        if (response.status !== 202) {
+            throw new Error(`Non-accepted response: ${response.status}`);
+        }
 
-    } catch (err: any) {
-        console.error(`Call ${call.id} failed:`, err.message);
+        // Call accepted by AI provider — assume webhook will handle completion
+    } catch (err) {
+        const error = err as Error;
+        console.error(`Call ${call.id} failed:`, error.message);
 
         const attempts = call.attempts + 1;
 
         if (attempts < 3) {
-            // Retry by resetting status to PENDING
+            // Retry by setting back to PENDING
             await prisma.call.update({
                 where: { id: call.id },
                 data: {
                     status: CallStatus.PENDING,
                     attempts,
-                    lastError: err.message,
+                    lastError: error.message,
                 },
             });
         } else {
@@ -61,7 +77,7 @@ async function processCall(call: any) {
                 data: {
                     status: CallStatus.FAILED,
                     attempts,
-                    lastError: err.message,
+                    lastError: error.message,
                     endedAt: new Date(),
                 },
             });
@@ -69,12 +85,15 @@ async function processCall(call: any) {
     }
 }
 
-export async function runWorkerLoop() {
-    const active = await getActiveCallCount();
-    if (active >= MAX_CONCURRENT_CALLS) return;
+/**
+ * Main worker loop: runs a single pass, respecting the concurrency limit.
+ */
+export async function runWorkerLoop(): Promise<void> {
+    const activeCount = await getActiveCallCount();
+    if (activeCount >= MAX_CONCURRENT_CALLS) return;
 
-    const call = await fetchNextPendingCall();
-    if (!call) return;
+    const nextCall = await fetchNextPendingCall();
+    if (!nextCall) return;
 
-    await processCall(call);
+    await processCall(nextCall);
 }

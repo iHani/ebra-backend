@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { Router, Request, Response } from 'express';
+import { PrismaClient, CallStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -8,15 +8,20 @@ const router = Router();
  * POST /api/v1/callbacks/call-status
  * Updates a call's status based on external provider webhook
  */
-router.post('/call-status', async (req, res) => {
-    const { callId, status, completedAt } = req.body;
+router.post('/call-status', async (req: Request, res: Response): Promise<void> => {
+    const { callId, status, completedAt } = req.body as {
+        callId?: string;
+        status?: CallStatus;
+        completedAt?: string;
+    };
 
     if (!callId || !status || !completedAt) {
-        return res.status(400).json({ error: 'Missing required fields' });
+        res.status(400).json({ error: 'Missing required fields' });
+        return;
     }
 
     try {
-        const call = await prisma.call.updateMany({
+        const result = await prisma.call.updateMany({
             where: { id: callId },
             data: {
                 status,
@@ -24,8 +29,9 @@ router.post('/call-status', async (req, res) => {
             },
         });
 
-        if (call.count === 0) {
-            return res.status(404).json({ error: 'Call not found' });
+        if (result.count === 0) {
+            res.status(404).json({ error: 'Call not found' });
+            return;
         }
 
         res.status(200).json({ updated: true });
