@@ -12,6 +12,8 @@ const router = Router();
 router.post('/', async (req, res) => {
     const { to, scriptId, metadata } = req.body;
 
+    console.log(`Received call request for ${to} with scriptId ${scriptId}`);
+
     if (!to || !scriptId) {
         return res.status(400).json({ error: 'Missing "to" or "scriptId"' });
     }
