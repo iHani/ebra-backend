@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import callsRouter from './api/calls';
 import callbacksRouter from './api/callbacks';
+import mockProviderRouter from './api/mock-provider';
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ app.use(express.json());
 // Versioned API routes
 app.use('/api/v1/calls', callsRouter);
 app.use('/api/v1/callbacks', callbacksRouter);
+app.use('/api/v1/mock-provider', mockProviderRouter);
 
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response): void => {

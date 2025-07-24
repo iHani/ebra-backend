@@ -15,7 +15,7 @@ router.post("/", async (req, res) => {
         const payload = {
             callId: req.body.callId,
             status: isSuccess ? "COMPLETED" : "FAILED",
-            message: isSuccess ? "Call finished successfully" : "AI voice failed"
+            message: isSuccess ? "Call finished successfully" : "AI voice failed",
         };
 
         console.log(`[Mock AI] Sending callback:`, payload);
