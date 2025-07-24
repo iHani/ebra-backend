@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient, CallStatus, Call } from '@prisma/client';
+import { Prisma, PrismaClient, CallStatus, Call } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -23,15 +23,18 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     }
 
     try {
-        const call: Call = await prisma.call.create({
+        const typedMetadata = metadata as Prisma.InputJsonValue;
+
+        const call = await prisma.call.create({
             data: {
                 to,
                 scriptId,
-                metadata,
+                metadata: typedMetadata,
                 status: CallStatus.PENDING,
                 attempts: 0,
             },
         });
+
 
         res.status(201).json(call);
     } catch (error) {
@@ -87,9 +90,15 @@ router.patch('/:id', async (req: Request<{ id: string }>, res: Response): Promis
             return;
         }
 
+        const typedMetadata = metadata as Prisma.InputJsonValue;
+
         const updated = await prisma.call.update({
             where: { id },
-            data: { to, scriptId, metadata },
+            data: {
+                to,
+                scriptId,
+                metadata: typedMetadata,
+            },
         });
 
         res.json(updated);
