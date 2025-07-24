@@ -1,0 +1,44 @@
+
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ebra_db
+      POSTGRES_USER: ebra
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    depends_on:
+      - db
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://ebra:password@db:5432/ebra_db
+      WEBHOOK_URL: http://localhost:3000/api/v1/callbacks/call-status
+      AI_PROVIDER_URL: http://api:3000/api/v1/provider
+    volumes:
+      - .:/app
+    command: npm run dev
+    restart: unless-stopped
+
+  worker:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://ebra:password@db:5432/ebra_db
+      WEBHOOK_URL: http://api:3000/api/v1/callbacks/call-status
+      AI_PROVIDER_URL: http://api:3000/api/v1/provider
+    volumes:
+      - .:/app
+    command: npm run worker
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

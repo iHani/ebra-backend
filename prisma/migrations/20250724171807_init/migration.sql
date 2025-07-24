@@ -16,3 +16,9 @@ CREATE TABLE "Call" (
 
     CONSTRAINT "Call_pkey" PRIMARY KEY ("id")
 );
+
+-- CreateIndex
+CREATE INDEX "Call_status_idx" ON "Call"("status");
+
+-- CreateIndex
+CREATE INDEX "Call_createdAt_idx" ON "Call"("createdAt");
