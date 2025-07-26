@@ -5,6 +5,7 @@ import callsRouter from './api/calls';
 import metricsRouter from './api/metrics';
 import callbacksRouter from './api/callbacks';
 import { initRedis } from './redis';
+import { startKafkaProducer } from './kafka';
 
 dotenv.config();
 
@@ -22,6 +23,11 @@ app.get('/health', (_req: Request, res: Response): void => {
 app.use('/api/v1/calls', callsRouter);
 app.use('/api/v1/metrics', metricsRouter);
 app.use('/api/v1/callbacks', callbacksRouter);
+
+startKafkaProducer().catch((err) => {
+    console.error('[Kafka] Producer connection failed:', err);
+    process.exit(1);
+});
 
 // Start server after Redis is ready
 initRedis()

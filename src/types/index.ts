@@ -19,6 +19,7 @@ export interface CallQuery {
 export interface CallStatusPayload {
     callId: string;
     status: CallStatus;
+    durationSec?: number;
     completedAt: string;
 }
 

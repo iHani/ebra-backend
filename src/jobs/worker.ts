@@ -2,8 +2,9 @@
 import { PrismaClient, Call, CallStatus } from '@prisma/client';
 import axios, { AxiosResponse } from 'axios';
 import redis from '../redis';
-import kafka from '../kafka';
+import kafka, { kafkaProducer } from '../kafka';
 import { EachMessagePayload } from 'kafkajs';
+import { CallStatusPayload } from '../types';
 
 const prisma = new PrismaClient();
 
@@ -56,50 +57,72 @@ async function processCall(call: Call): Promise<void> {
         console.log(`Phone ${call.to} already locked. Skipping.`);
         return;
     }
+
     console.log(`Locked phone ${call.to}`);
 
     try {
-        const response: AxiosResponse = await axios.post(AI_PROVIDER_URL, {
-            to: call.to,
-            scriptId: call.scriptId,
-            webhookUrl: `${CALLBACK_BASE_URL}/call-status`,
+        // Instead of hitting the real provider, simulate it
+        console.log(`[SIMULATION] Sending fake AI call to ${call.to}`);
+
+        // Pretend it was accepted
+        await prisma.call.update({
+            where: { id: call.id },
+            data: {
+                status: CallStatus.IN_PROGRESS,
+                startedAt: new Date(),
+            },
         });
 
-        if (response.status !== 202) {
-            throw new Error(`Non-accepted response: ${response.status}`);
-        }
+        // Simulate delayed callback
+        setTimeout(async () => {
+            const statusPool: CallStatus[] = ['COMPLETED', 'FAILED', 'BUSY', 'NO_ANSWER'];
+            const simulatedStatus = statusPool[Math.floor(Math.random() * statusPool.length)];
 
-        // Call accepted — webhook will update status
+            const payload: CallStatusPayload = {
+                callId: call.id,
+                status: simulatedStatus,
+                ...(simulatedStatus === 'COMPLETED' || simulatedStatus === 'FAILED'
+                    ? { durationSec: Math.floor(Math.random() * 90) + 10 }
+                    : {}),
+                completedAt: new Date().toISOString(),
+            };
+
+            try {
+                await axios.post(`${process.env.CALLBACK_BASE_URL}/call-status`, payload);
+                console.log(`[SIMULATION] Callback sent with status ${payload.status}`);
+
+                // Optionally produce Kafka event
+                await kafkaProducer.send({
+                    topic: 'call-status-updates',
+                    messages: [{ value: JSON.stringify(payload) }],
+                });
+                console.log(`[SIMULATION] Kafka message produced`);
+            } catch (err) {
+                console.error('[SIMULATION ERROR] Failed to post callback or send Kafka event:', err);
+            }
+        }, 1500); // Fake delay of 1.5s
     } catch (err) {
         const error = err as Error;
         console.error(`Call ${call.id} failed:`, error.message);
 
         const attempts = call.attempts + 1;
 
-        if (attempts < 3) {
-            await prisma.call.update({
-                where: { id: call.id },
-                data: {
-                    status: CallStatus.PENDING,
-                    attempts,
-                    lastError: error.message,
-                },
-            });
-        } else {
-            await prisma.call.update({
-                where: { id: call.id },
-                data: {
-                    status: CallStatus.FAILED,
-                    attempts,
-                    lastError: error.message,
-                    endedAt: new Date(),
-                },
-            });
-        }
+        const isFinalAttempt = attempts >= 3;
+
+        await prisma.call.update({
+            where: { id: call.id },
+            data: {
+                status: isFinalAttempt ? CallStatus.FAILED : CallStatus.PENDING,
+                attempts,
+                lastError: error.message,
+                ...(isFinalAttempt && { endedAt: new Date() }),
+            },
+        });
 
         await redis.del(`lock:${call.to}`);
     }
 }
+
 
 /**
  * Main worker loop: runs a single pass, respecting the concurrency limit.

@@ -7,13 +7,15 @@ const router = Router();
 
 router.get('/', async (_req: Request, res: Response) => {
     try {
-        const statuses: CallStatus[] = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'EXPIRED'];
+        const statuses: CallStatus[] = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'EXPIRED', 'BUSY', 'NO_ANSWER'];
         const counts: Record<CallStatus, number> = {
             PENDING: 0,
             IN_PROGRESS: 0,
             COMPLETED: 0,
             FAILED: 0,
             EXPIRED: 0,
+            BUSY: 0,
+            NO_ANSWER: 0,
         };
 
         await Promise.all(

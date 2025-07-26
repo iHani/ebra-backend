@@ -6,6 +6,8 @@ A backend service that manages AI-driven phone call requests. It provides:
 - A background worker to invoke an external AI call provider
 - A webhook receiver for call status updates
 - A metrics endpoint for real-time service visibility
+- A Redis cache for locking phone numbers
+- A Kafka queue for receiving call requests
 
 ---
 
@@ -16,6 +18,8 @@ A backend service that manages AI-driven phone call requests. It provides:
 - PostgreSQL
 - Prisma ORM
 - Docker & Docker Compose
+- Redis
+- Kafka
 
 ---
 
