@@ -2,6 +2,8 @@
 import { PrismaClient, Call, CallStatus } from '@prisma/client';
 import axios, { AxiosResponse } from 'axios';
 import redis from '../redis';
+import kafka from '../kafka';
+import { EachMessagePayload } from 'kafkajs';
 
 const prisma = new PrismaClient();
 
@@ -22,24 +24,24 @@ async function getActiveCallCount(): Promise<number> {
 /**
  * Atomically fetch the next pending call and mark it as in-progress.
  */
-async function fetchNextPendingCall(): Promise<Call | null> {
-    return prisma.$transaction(async (tx) => {
-        const next = await tx.call.findFirst({
-            where: { status: CallStatus.PENDING },
-            orderBy: { createdAt: 'asc' },
-        });
+// async function fetchNextPendingCall(): Promise<Call | null> {
+//     return prisma.$transaction(async (tx) => {
+//         const next = await tx.call.findFirst({
+//             where: { status: CallStatus.PENDING },
+//             orderBy: { createdAt: 'asc' },
+//         });
 
-        if (!next) return null;
+//         if (!next) return null;
 
-        return tx.call.update({
-            where: { id: next.id },
-            data: {
-                status: CallStatus.IN_PROGRESS,
-                startedAt: new Date(),
-            },
-        });
-    });
-}
+//         return tx.call.update({
+//             where: { id: next.id },
+//             data: {
+//                 status: CallStatus.IN_PROGRESS,
+//                 startedAt: new Date(),
+//             },
+//         });
+//     });
+// }
 
 /**
  * Process a single call: send to AI provider and handle retries or failures.
@@ -103,11 +105,29 @@ async function processCall(call: Call): Promise<void> {
  * Main worker loop: runs a single pass, respecting the concurrency limit.
  */
 export async function runWorkerLoop(): Promise<void> {
-    const activeCount = await getActiveCallCount();
-    if (activeCount >= MAX_CONCURRENT_CALLS) return;
+    const consumer = kafka.consumer({ groupId: 'call-workers' });
 
-    const nextCall = await fetchNextPendingCall();
-    if (!nextCall) return;
+    await consumer.connect();
+    await consumer.subscribe({ topic: 'call-requests', fromBeginning: false });
 
-    await processCall(nextCall);
+    await consumer.run({
+        eachMessage: async ({ message }) => {
+            if (!message.value) return;
+
+            const call = JSON.parse(message.value.toString());
+
+            // ✅ Enforce concurrency cap
+            const activeCount = await getActiveCallCount();
+            if (activeCount >= MAX_CONCURRENT_CALLS) {
+                console.log(`⏳ Max concurrency (${MAX_CONCURRENT_CALLS}) reached. Skipping ${call.id}`);
+                return;
+            }
+
+            // 🔐 Lock + process
+            await processCall(call);
+        },
+    });
+
+
+    console.log('👷 Kafka consumer running for call-requests...');
 }

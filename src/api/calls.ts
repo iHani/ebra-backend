@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express';
 import prisma from '../db';
 import { CreateCallInput, UpdateCallPayload, CallQuery } from '../types';
 import { CallStatus } from '@prisma/client';
+import kafka from '../kafka';
 
 const router = Router();
 
@@ -25,7 +26,18 @@ router.post('/', async (req: Request<{}, {}, CreateCallInput>, res: Response) =>
             },
         });
         console.log(`[CREATE] Call ${call.id} created`);
+
+        const producer = kafka.producer();
+        await producer.connect();
+        await producer.send({
+            topic: 'call-requests',
+            messages: [{ value: JSON.stringify(call) }],
+        });
+        await producer.disconnect();
+
         res.status(201).json(call);
+
+
     } catch (err) {
         console.error('[ERROR] Failed to create call:', err);
         res.status(500).json({ error: 'Internal server error' });
