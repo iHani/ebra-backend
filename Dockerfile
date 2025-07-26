@@ -1,18 +1,20 @@
-# Dockerfile
+# Use official Node.js LTS image
 FROM node:18
 
-# Create app directory
+# Set working directory
 WORKDIR /app
 
-# Install app dependencies
-COPY package*.json ./
+# Copy package files
+COPY package.json package-lock.json* ./
+
+# Install dependencies
 RUN npm install
 
-# Copy rest of the code
+# Copy the entire source code
 COPY . .
 
-# Generate Prisma client
-RUN npx prisma generate
+# Build the TypeScript project
+RUN npm run build
 
-# Default to dev server (can override for worker)
-CMD ["npm", "run", "dev"]
+# Default command
+CMD ["npm", "start"]

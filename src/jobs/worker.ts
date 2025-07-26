@@ -1,11 +1,14 @@
+// src/jobs/worker.ts
 import { PrismaClient, Call, CallStatus } from '@prisma/client';
 import axios, { AxiosResponse } from 'axios';
+import redis from '../redis';
 
 const prisma = new PrismaClient();
 
 const MAX_CONCURRENT_CALLS = 30;
-const WEBHOOK_URL: string = process.env.WEBHOOK_URL!;
 const AI_PROVIDER_URL: string = process.env.AI_PROVIDER_URL!;
+const CALLBACK_BASE_URL: string = process.env.CALLBACK_BASE_URL!;
+const REDIS_LOCK_TTL_SEC = 300; // 5 min
 
 /**
  * Count the number of active (in-progress) calls.
@@ -42,18 +45,29 @@ async function fetchNextPendingCall(): Promise<Call | null> {
  * Process a single call: send to AI provider and handle retries or failures.
  */
 async function processCall(call: Call): Promise<void> {
+    const result = await redis.set(`lock:${call.to}`, call.id, {
+        NX: true,
+        EX: 300,
+    });
+
+    if (result !== 'OK') {
+        console.log(`Phone ${call.to} already locked. Skipping.`);
+        return;
+    }
+    console.log(`Locked phone ${call.to}`);
+
     try {
         const response: AxiosResponse = await axios.post(AI_PROVIDER_URL, {
             to: call.to,
             scriptId: call.scriptId,
-            webhookUrl: WEBHOOK_URL,
+            webhookUrl: `${CALLBACK_BASE_URL}/call-status`,
         });
 
         if (response.status !== 202) {
             throw new Error(`Non-accepted response: ${response.status}`);
         }
 
-        // Call accepted by AI provider — assume webhook will handle completion
+        // Call accepted — webhook will update status
     } catch (err) {
         const error = err as Error;
         console.error(`Call ${call.id} failed:`, error.message);
@@ -61,7 +75,6 @@ async function processCall(call: Call): Promise<void> {
         const attempts = call.attempts + 1;
 
         if (attempts < 3) {
-            // Retry by setting back to PENDING
             await prisma.call.update({
                 where: { id: call.id },
                 data: {
@@ -71,7 +84,6 @@ async function processCall(call: Call): Promise<void> {
                 },
             });
         } else {
-            // Mark as permanently failed
             await prisma.call.update({
                 where: { id: call.id },
                 data: {
@@ -82,6 +94,8 @@ async function processCall(call: Call): Promise<void> {
                 },
             });
         }
+
+        await redis.del(`lock:${call.to}`);
     }
 }
 

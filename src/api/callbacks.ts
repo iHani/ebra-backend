@@ -1,43 +1,40 @@
+// src/api/callbacks.ts
 import { Router, Request, Response } from 'express';
-import { PrismaClient, CallStatus } from '@prisma/client';
+import { CallStatusPayload } from '../types';
+import prisma from '../db';
+import redis from '../redis';
 
-const prisma = new PrismaClient();
 const router = Router();
 
-/**
- * POST /api/v1/callbacks/call-status
- * Updates a call's status based on external provider webhook
- */
-router.post('/call-status', async (req: Request, res: Response): Promise<void> => {
-    const { callId, status, completedAt } = req.body as {
-        callId?: string;
-        status?: CallStatus;
-        completedAt?: string;
-    };
+router.post('/call-status', async (req: Request<{}, {}, CallStatusPayload>, res: Response) => {
+    const { callId, status, completedAt } = req.body;
 
     if (!callId || !status || !completedAt) {
-        res.status(400).json({ error: 'Missing required fields' });
-        return;
+        return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    const newStatus = status === 'COMPLETED' ? 'COMPLETED' : 'FAILED';
+
     try {
-        const result = await prisma.call.updateMany({
+        const updated = await prisma.call.update({
             where: { id: callId },
             data: {
-                status,
+                status: newStatus,
                 endedAt: new Date(completedAt),
             },
         });
 
-        if (result.count === 0) {
-            res.status(404).json({ error: 'Call not found' });
-            return;
+        const endedCall = await prisma.call.findUnique({ where: { id: callId } });
+        if (endedCall) {
+            await redis.del(`lock:${endedCall.to}`);
         }
 
-        res.status(200).json({ updated: true });
-    } catch (error) {
-        console.error('Error processing callback:', error);
-        res.status(500).json({ error: 'Failed to process callback' });
+
+        console.log(`[WEBHOOK] Call ${callId} marked as ${newStatus}`);
+        res.status(200).json({ success: true });
+    } catch (err) {
+        console.error('[ERROR] Failed to process webhook:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

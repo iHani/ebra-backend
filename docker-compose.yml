@@ -1,54 +1,55 @@
 services:
   db:
-    image: postgres:15
-    restart: unless-stopped
+    image: postgres:16
+    restart: always
     ports:
       - "5432:5432"
     environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ebra_db
-      POSTGRES_USER: ebra
-      POSTGRES_PASSWORD: password
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  prisma:
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/ebra_db
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - .:/app
+    command: npx prisma generate && npx prisma migrate deploy
 
   api:
     build: .
-    restart: unless-stopped
+    depends_on:
+      - db
+      - prisma
+      - redis
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgresql://ebra:password@db:5432/ebra_db
-      WEBHOOK_URL: http://api:3000/api/v1/callbacks/call-status
-      AI_PROVIDER_URL: http://api:3000/api/v1/provider
-    volumes:
-      - .:/app
+      DATABASE_URL: postgres://postgres:postgres@db:5432/ebra_db
+      AI_PROVIDER_URL: https://provider.com/api/v1/calls
+      CALLBACK_BASE_URL: http://api:3000/api/v1
+      REDIS_HOST: redis
+      PORT: 3000
     command: npm run dev
 
   worker:
     build: .
-    restart: unless-stopped
     depends_on:
       - db
+      - prisma
+      - redis
     environment:
-      DATABASE_URL: postgresql://ebra:password@db:5432/ebra_db
-      WEBHOOK_URL: http://api:3000/api/v1/callbacks/call-status
-      AI_PROVIDER_URL: http://api:3000/api/v1/provider
-    volumes:
-      - .:/app
+      DATABASE_URL: postgres://postgres:postgres@db:5432/ebra_db
+      AI_PROVIDER_URL: https://provider.com/api/v1/calls
+      CALLBACK_BASE_URL: http://api:3000/api/v1
+      REDIS_HOST: redis
     command: npm run worker
-
-  studio:
-    build: .
-    restart: unless-stopped
-    depends_on:
-      - db
-    environment:
-      DATABASE_URL: postgresql://ebra:password@db:5432/ebra_db
-    volumes:
-      - .:/app
-    ports:
-      - "5555:5555"
-    command: npx prisma studio --host 0.0.0.0 --port 5555
-
-volumes:
-  postgres_data:

@@ -1,163 +1,92 @@
+// src/api/calls.ts
 import { Router, Request, Response } from 'express';
-import { Prisma, PrismaClient, CallStatus, Call } from '@prisma/client';
+import prisma from '../db';
+import { CreateCallInput, UpdateCallPayload, CallQuery } from '../types';
+import { CallStatus } from '@prisma/client';
 
-const prisma = new PrismaClient();
 const router = Router();
 
-/**
- * POST /api/v1/calls
- * Create a new call request
- */
-router.post('/', async (req: Request, res: Response): Promise<void> => {
-    const { to, scriptId, metadata } = req.body as {
-        to?: string;
-        scriptId?: string;
-        metadata?: Record<string, unknown> | null;
-    };
-
-    console.log(`Received call request for ${to} with scriptId ${scriptId}`);
+// POST /calls
+router.post('/', async (req: Request<{}, {}, CreateCallInput>, res: Response) => {
+    const { to, scriptId, metadata } = req.body;
 
     if (!to || !scriptId) {
-        res.status(400).json({ error: 'Missing "to" or "scriptId"' });
-        return;
+        return res.status(400).json({ error: 'Missing to or scriptId' });
     }
 
     try {
-        const typedMetadata = metadata as Prisma.InputJsonValue;
-
         const call = await prisma.call.create({
             data: {
                 to,
                 scriptId,
-                metadata: typedMetadata,
-                status: CallStatus.PENDING,
+                metadata,
+                status: 'PENDING',
                 attempts: 0,
             },
         });
-
-
+        console.log(`[CREATE] Call ${call.id} created`);
         res.status(201).json(call);
-    } catch (error) {
-        console.error('Error creating call:', error);
-        res.status(500).json({ error: 'Failed to create call' });
+    } catch (err) {
+        console.error('[ERROR] Failed to create call:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-/**
- * GET /api/v1/calls/:id
- * Fetch a call by ID
- */
-router.get('/:id', async (req: Request<{ id: string }>, res: Response): Promise<void> => {
-    const { id } = req.params;
-
+// GET /calls/:id
+router.get('/:id', async (req: Request<{ id: string }>, res: Response) => {
     try {
-        const call = await prisma.call.findUnique({ where: { id } });
+        const call = await prisma.call.findUnique({ where: { id: req.params.id } });
 
-        if (!call) {
-            res.status(404).json({ error: 'Call not found' });
-            return;
-        }
+        if (!call) return res.status(404).json({ error: 'Call not found' });
 
         res.json(call);
-    } catch (error) {
-        console.error('Error fetching call:', error);
-        res.status(500).json({ error: 'Failed to fetch call' });
+    } catch (err) {
+        console.error('[ERROR] Failed to fetch call:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-/**
- * PATCH /api/v1/calls/:id
- * Update the payload (only if status === 'PENDING')
- */
-router.patch('/:id', async (req: Request<{ id: string }>, res: Response): Promise<void> => {
-    const { id } = req.params;
-    const { to, scriptId, metadata } = req.body as {
-        to?: string;
-        scriptId?: string;
-        metadata?: Record<string, unknown> | null;
-    };
-
+// PATCH /calls/:id
+router.patch('/:id', async (req: Request<{ id: string }, {}, UpdateCallPayload>, res: Response) => {
     try {
-        const existing = await prisma.call.findUnique({ where: { id } });
+        const existing = await prisma.call.findUnique({ where: { id: req.params.id } });
 
-        if (!existing) {
-            res.status(404).json({ error: 'Call not found' });
-            return;
+        if (!existing) return res.status(404).json({ error: 'Call not found' });
+        if (existing.status !== 'PENDING') {
+            return res.status(400).json({ error: 'Only PENDING calls can be updated' });
         }
-
-        if (existing.status !== CallStatus.PENDING) {
-            res.status(400).json({ error: 'Can only update calls with status=PENDING' });
-            return;
-        }
-
-        const typedMetadata = metadata as Prisma.InputJsonValue;
 
         const updated = await prisma.call.update({
-            where: { id },
+            where: { id: req.params.id },
             data: {
-                to,
-                scriptId,
-                metadata: typedMetadata,
+                scriptId: req.body.scriptId ?? existing.scriptId,
+                metadata: (req.body.metadata ?? existing.metadata) || undefined,
             },
         });
 
+        console.log(`[UPDATE] Call ${updated.id} updated`);
         res.json(updated);
-    } catch (error) {
-        console.error('Error updating call:', error);
-        res.status(500).json({ error: 'Failed to update call' });
+    } catch (err) {
+        console.error('[ERROR] Failed to update call:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-/**
- * GET /api/v1/calls?status=...&skip=0&take=10
- * List calls by status, paginated
- */
-router.get('/', async (req: Request, res: Response): Promise<void> => {
-    const { status, skip = '0', take = '10' } = req.query;
-
-    const where = status ? { status: status as CallStatus } : {};
-
+// GET /calls?status=...
+router.get('/', async (req: Request<{}, {}, {}, CallQuery>, res: Response) => {
     try {
+        const status = req.query.status as CallStatus | undefined;
+
         const calls = await prisma.call.findMany({
-            where,
-            skip: Number(skip),
-            take: Number(take),
+            where: status ? { status } : {},
             orderBy: { createdAt: 'desc' },
+            take: 100,
         });
 
         res.json(calls);
-    } catch (error) {
-        console.error('Error listing calls:', error);
-        res.status(500).json({ error: 'Failed to list calls' });
-    }
-});
-
-/**
- * GET /api/v1/metrics
- * Returns counts of calls per status
- */
-router.get('/metrics', async (_req: Request, res: Response): Promise<void> => {
-    try {
-        const statuses: CallStatus[] = [
-            CallStatus.PENDING,
-            CallStatus.IN_PROGRESS,
-            CallStatus.COMPLETED,
-            CallStatus.FAILED,
-            CallStatus.EXPIRED,
-        ];
-
-        const counts = await Promise.all(
-            statuses.map(async (status) => {
-                const count = await prisma.call.count({ where: { status } });
-                return [status, count] as [CallStatus, number];
-            })
-        );
-
-        const response = Object.fromEntries(counts);
-        res.json(response);
-    } catch (error) {
-        console.error('Error fetching metrics:', error);
-        res.status(500).json({ error: 'Failed to fetch metrics' });
+    } catch (err) {
+        console.error('[ERROR] Failed to list calls:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
