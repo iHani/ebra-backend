@@ -38,7 +38,7 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/ebra_db
       AI_PROVIDER_URL: https://provider.com/api/v1/calls
-      CALLBACK_BASE_URL: http://api:3000/api/v1
+      CALLBACK_BASE_URL: http://api:3000/api/v1/callbacks
       REDIS_HOST: redis
       PORT: 3000
     command: npm run dev
@@ -54,7 +54,7 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/ebra_db
       AI_PROVIDER_URL: https://provider.com/api/v1/calls
-      CALLBACK_BASE_URL: http://api:3000/api/v1
+      CALLBACK_BASE_URL: http://api:3000/api/v1/callbacks
       REDIS_HOST: redis
     command: npm run worker
 
