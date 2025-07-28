@@ -1,9 +1,8 @@
 // src/jobs/worker.ts
 import { PrismaClient, Call, CallStatus } from '@prisma/client';
-import axios, { AxiosResponse } from 'axios';
+import axios from 'axios';
 import redis from '../redis';
 import kafka, { kafkaProducer } from '../kafka';
-import { EachMessagePayload } from 'kafkajs';
 import { CallStatusPayload } from '../types';
 
 const prisma = new PrismaClient();
@@ -13,58 +12,23 @@ const AI_PROVIDER_URL: string = process.env.AI_PROVIDER_URL!;
 const CALLBACK_BASE_URL: string = process.env.CALLBACK_BASE_URL!;
 const REDIS_LOCK_TTL_SEC = 300; // 5 min
 
-/**
- * Count the number of active (in-progress) calls.
- */
 async function getActiveCallCount(): Promise<number> {
-    return prisma.call.count({
-        where: { status: CallStatus.IN_PROGRESS },
-    });
+    return prisma.call.count({ where: { status: CallStatus.IN_PROGRESS } });
 }
 
-/**
- * Atomically fetch the next pending call and mark it as in-progress.
- */
-// async function fetchNextPendingCall(): Promise<Call | null> {
-//     return prisma.$transaction(async (tx) => {
-//         const next = await tx.call.findFirst({
-//             where: { status: CallStatus.PENDING },
-//             orderBy: { createdAt: 'asc' },
-//         });
-
-//         if (!next) return null;
-
-//         return tx.call.update({
-//             where: { id: next.id },
-//             data: {
-//                 status: CallStatus.IN_PROGRESS,
-//                 startedAt: new Date(),
-//             },
-//         });
-//     });
-// }
-
-/**
- * Process a single call: send to AI provider and handle retries or failures.
- */
 async function processCall(call: Call): Promise<void> {
-    const result = await redis.set(`lock:${call.to}`, call.id, {
-        NX: true,
-        EX: 300,
-    });
+    const lockKey = `lock:${call.to}`;
+    const result = await redis.set(lockKey, call.id, { NX: true, EX: REDIS_LOCK_TTL_SEC });
 
     if (result !== 'OK') {
-        console.log(`Phone ${call.to} already locked. Skipping.`);
+        console.log(`🔒 Phone ${call.to} already locked. Skipping.`);
         return;
     }
 
-    console.log(`Locked phone ${call.to}`);
+    console.log(`✅ Locked phone ${call.to} for call ${call.id}`);
 
     try {
-        // Instead of hitting the real provider, simulate it
-        console.log(`[SIMULATION] Sending fake AI call to ${call.to}`);
-
-        // Pretend it was accepted
+        // Simulate call accepted
         await prisma.call.update({
             where: { id: call.id },
             data: {
@@ -73,7 +37,9 @@ async function processCall(call: Call): Promise<void> {
             },
         });
 
-        // Simulate delayed callback
+        console.log(`[SIMULATION] Call ${call.id} marked as IN_PROGRESS`);
+
+        // Fake callback delay
         setTimeout(async () => {
             const statusPool: CallStatus[] = ['COMPLETED', 'FAILED', 'BUSY', 'NO_ANSWER'];
             const simulatedStatus = statusPool[Math.floor(Math.random() * statusPool.length)];
@@ -82,75 +48,90 @@ async function processCall(call: Call): Promise<void> {
                 callId: call.id,
                 status: simulatedStatus,
                 ...(simulatedStatus === 'COMPLETED' || simulatedStatus === 'FAILED'
-                    ? { durationSec: Math.floor(Math.random() * 90) + 10 }
+                    ? { durationSec: 20 }
                     : {}),
                 completedAt: new Date().toISOString(),
             };
 
             try {
-                await axios.post(`${process.env.CALLBACK_BASE_URL}/call-status`, payload);
-                console.log(`[SIMULATION] Callback sent with status ${payload.status}`);
+                console.log(`[SIMULATION] Sending callback for ${call.id} with status: ${payload.status}`);
+                await axios.post(`${CALLBACK_BASE_URL}/call-status`, payload);
 
-                // Optionally produce Kafka event
                 await kafkaProducer.send({
                     topic: 'call-status-updates',
                     messages: [{ value: JSON.stringify(payload) }],
                 });
-                console.log(`[SIMULATION] Kafka message produced`);
+
+                console.log(`[SIMULATION] Kafka message produced for call ${call.id}`);
             } catch (err) {
-                console.error('[SIMULATION ERROR] Failed to post callback or send Kafka event:', err);
+                console.error(`[SIMULATION ERROR] Callback/Kafka failed for ${call.id}:`, err);
             }
-        }, 1500); // Fake delay of 1.5s
+        }, 1500);
     } catch (err) {
-        const error = err as Error;
-        console.error(`Call ${call.id} failed:`, error.message);
-
         const attempts = call.attempts + 1;
+        const isFinal = attempts >= 3;
+        const error = (err as Error).message;
 
-        const isFinalAttempt = attempts >= 3;
+        console.error(`❌ Error processing call ${call.id}: ${error}`);
 
         await prisma.call.update({
             where: { id: call.id },
             data: {
-                status: isFinalAttempt ? CallStatus.FAILED : CallStatus.PENDING,
+                status: isFinal ? CallStatus.FAILED : CallStatus.PENDING,
                 attempts,
-                lastError: error.message,
-                ...(isFinalAttempt && { endedAt: new Date() }),
+                lastError: error,
+                ...(isFinal && { endedAt: new Date() }),
             },
         });
 
-        await redis.del(`lock:${call.to}`);
+        await redis.del(lockKey);
+    }
+}
+
+export async function runWorkerLoop(): Promise<void> {
+    const consumer = kafka.consumer({ groupId: 'call-workers' });
+
+    try {
+        console.log('🔌 Connecting to Redis...');
+        await redis.connect();
+        console.log('✅ Redis connected.');
+
+        console.log('📡 Connecting Kafka consumer...');
+        await consumer.connect();
+        console.log('✅ Kafka consumer connected.');
+
+        await consumer.subscribe({ topic: 'call-requests', fromBeginning: false });
+        console.log('📨 Subscribed to topic: call-requests');
+
+        await consumer.run({
+            eachMessage: async ({ message }) => {
+                const raw = message.value?.toString();
+                if (!raw) return;
+
+                console.log(`📥 Received message: ${raw}`);
+
+                try {
+                    const call = JSON.parse(raw);
+
+                    const activeCount = await getActiveCallCount();
+                    if (activeCount >= MAX_CONCURRENT_CALLS) {
+                        console.log(`⏳ Max concurrency reached. Skipping call ${call.id}`);
+                        return;
+                    }
+
+                    await processCall(call);
+                } catch (err) {
+                    console.error('❌ Failed to handle message:', err);
+                }
+            },
+        });
+
+        console.log('👷 Kafka consumer running for call-requests...');
+    } catch (err) {
+        console.error('🔥 Worker failed to start:', err);
+        process.exit(1);
     }
 }
 
 
-/**
- * Main worker loop: runs a single pass, respecting the concurrency limit.
- */
-export async function runWorkerLoop(): Promise<void> {
-    const consumer = kafka.consumer({ groupId: 'call-workers' });
-
-    await consumer.connect();
-    await consumer.subscribe({ topic: 'call-requests', fromBeginning: false });
-
-    await consumer.run({
-        eachMessage: async ({ message }) => {
-            if (!message.value) return;
-
-            const call = JSON.parse(message.value.toString());
-
-            // ✅ Enforce concurrency cap
-            const activeCount = await getActiveCallCount();
-            if (activeCount >= MAX_CONCURRENT_CALLS) {
-                console.log(`⏳ Max concurrency (${MAX_CONCURRENT_CALLS}) reached. Skipping ${call.id}`);
-                return;
-            }
-
-            // 🔐 Lock + process
-            await processCall(call);
-        },
-    });
-
-
-    console.log('👷 Kafka consumer running for call-requests...');
-}
+runWorkerLoop();
