@@ -4,44 +4,37 @@ import prisma from '../db';
 import { CreateCallInput, UpdateCallPayload, CallQuery } from '../types';
 import { CallStatus } from '@prisma/client';
 import kafka from '../kafka';
+import { applyOverride } from '../utils/overrideHandler';
 
 const router = Router();
 
 // POST /calls
 router.post('/', async (req: Request<{}, {}, CreateCallInput>, res: Response) => {
     const { to, scriptId, metadata } = req.body;
-
     if (!to || !scriptId) {
         return res.status(400).json({ error: 'Missing to or scriptId' });
     }
 
-    try {
-        const call = await prisma.call.create({
-            data: {
-                to,
-                scriptId,
-                metadata,
-                status: 'PENDING',
-                attempts: 0,
-            },
-        });
-        console.log(`[CREATE] Call ${call.id} created`);
+    const call = await prisma.call.create({
+        data: { to, scriptId, metadata, status: 'PENDING', attempts: 0 },
+    });
+    console.log(`[CREATE] Call ${call.id} created`);
 
-        const producer = kafka.producer();
-        await producer.connect();
-        await producer.send({
-            topic: 'call-requests',
-            messages: [{ value: JSON.stringify(call) }],
-        });
-        await producer.disconnect();
-
-        res.status(201).json(call);
-
-
-    } catch (err) {
-        console.error('[ERROR] Failed to create call:', err);
-        res.status(500).json({ error: 'Internal server error' });
+    // Check for overrides values for testing
+    const override = await applyOverride(call);
+    if (override) {
+        return res.status(override.statusCode).json(override.payload);
     }
+
+    const producer = kafka.producer();
+    await producer.connect();
+    await producer.send({
+        topic: 'call-requests',
+        messages: [{ value: JSON.stringify(call) }],
+    });
+    await producer.disconnect();
+
+    return res.status(201).json(call);
 });
 
 // GET /calls/:id

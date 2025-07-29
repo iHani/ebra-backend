@@ -11,6 +11,7 @@ const MAX_CONCURRENT_CALLS = 30;
 const AI_PROVIDER_URL: string = process.env.AI_PROVIDER_URL!;
 const CALLBACK_BASE_URL: string = process.env.CALLBACK_BASE_URL!;
 const REDIS_LOCK_TTL_SEC = 300; // 5 min
+const overrideSequences: Record<string, CallStatus[]> = {};
 
 async function getActiveCallCount(): Promise<number> {
     return prisma.call.count({ where: { status: CallStatus.IN_PROGRESS } });
@@ -38,6 +39,27 @@ async function processCall(call: Call): Promise<void> {
         });
 
         console.log(`[SIMULATION] Call ${call.id} marked as IN_PROGRESS`);
+
+
+        // Determine the next status to simulate
+        let simulatedStatus: CallStatus;
+        const ov = call.metadata?.override as string | undefined;
+        if (ov) {
+            // initialize the sequence on first hit
+            if (!overrideSequences[call.id]) {
+                overrideSequences[call.id] = ov === 'FAIL_THEN_SUCCESS'
+                    ? ['FAILED', 'FAILED', 'COMPLETED']
+                    : ov === 'PERM_FAIL'
+                        ? ['FAILED', 'FAILED', 'FAILED']
+                        : ['COMPLETED'];
+            }
+            simulatedStatus = overrideSequences[call.id].shift()!;
+        } else {
+            // fallback to random as before
+            const pool: CallStatus[] = ['COMPLETED', 'FAILED', 'BUSY', 'NO_ANSWER'];
+            simulatedStatus = pool[Math.floor(Math.random() * pool.length)];
+        }
+
 
         // Fake callback delay
         setTimeout(async () => {
@@ -91,8 +113,9 @@ async function processCall(call: Call): Promise<void> {
         if (!isFinal) {
             await kafkaProducer.send({
                 topic: 'call-requests',
-                messages: [{ value: JSON.stringify(call) }],
+                messages: [{ value: JSON.stringify({ ...call, attempts }) }],
             });
+            console.log(`🔄 Re‑queued call ${call.id} (attempt ${attempts})`);
         }
 
     }
