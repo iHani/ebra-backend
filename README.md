@@ -106,42 +106,27 @@ done
 wait
 ```
 
-# 1. Successful call
-
-```bash
-curl -s -X POST http://localhost:3000/api/v1/calls/demo \
-     -H "Content-Type: application/json" \
-     -d '{
-           "to": "+966501234567",
-           "scriptId": "testFlow",
-           "metadata": { "override": "FORCE_SUCCESS" }
-         }' \
+# 1) Immediate success
+curl -s -X POST http://localhost:3000/api/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+966501234567","scriptId":"stressTest","metadata":{"override":"FORCE_SUCCESS"}}' \
 | python -m json.tool
-```
 
-# 2. Retry‑then‑success
-```bash
-curl -s -X POST http://localhost:3000/api/v1/calls/demo \
-     -H "Content-Type: application/json" \
-     -d '{
-           "to": "+966501234568",
-           "scriptId": "testFlow",
-           "metadata": { "override": "FORCE_FAIL_THEN_SUCCESS" }
-         }' \
-| python -m json.tool
-```
+# 2) Two fails then success (Wait ~45 s for the two 20 s retries to run through before checking its final state.)
+
+curl -s -X POST http://localhost:3000/api/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+966-FAIL_THEN_SUCCESS_NUMBERS",
+    "scriptId": "stressTest"
+  }' | python -m json.tool
 
 
-# 3. Permanent‑failure → replacement
-```bash
-curl -s -X POST http://localhost:3000/api/v1/calls/demo \
-     -H "Content-Type: application/json" \
-     -d '{
-           "to": "+966501234569",
-           "scriptId": "testFlow",
-           "metadata": { "override": "FORCE_PERMANENT_FAILURE" }
-         }' \
-| python -m json.tool
-```
-
+# 3) Permanent failure
+curl -s -X POST http://localhost:3000/api/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+966-PERM_FAIL_NUMBERS",
+    "scriptId": "stressTest"
+  }' | python -m json.tool
 

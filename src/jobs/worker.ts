@@ -1,166 +1,186 @@
 // src/jobs/worker.ts
 import { PrismaClient, Call, CallStatus } from '@prisma/client';
 import axios from 'axios';
-import redis, { initRedis } from '../redis';
-import { kafkaConsumer, kafkaProducer, startKafkaConsumer, startKafkaProducer } from '../kafka';
-import { CallStatusPayload } from '../types';
+import redisClient, { initRedis } from '../redis';
+import {
+    kafkaConsumer,
+    kafkaProducer,
+    startKafkaConsumer,
+    startKafkaProducer,
+} from '../kafka';
+import type { CallStatusPayload } from '../types';
 
 const prisma = new PrismaClient();
 
 const MAX_CONCURRENT_CALLS = 30;
-const AI_PROVIDER_URL: string = process.env.AI_PROVIDER_URL!;
-const CALLBACK_BASE_URL: string = process.env.CALLBACK_BASE_URL!;
-const REDIS_LOCK_TTL_SEC = 300; // 5 min
-const overrideSequences: Record<string, CallStatus[]> = {};
+const FAIL_THEN_SUCCESS_NUMBERS = new Set(['+966-FAIL_THEN_SUCCESS_NUMBERS']);
+const PERM_FAIL_NUMBERS = new Set(['+966-PERM_FAIL_NUMBERS']);
+const LOCK_TTL_SEC = 300; // seconds
+const CALLBACK_URL = `${process.env.CALLBACK_BASE_URL}/call-status`!;
 
-async function getActiveCallCount(): Promise<number> {
-    return prisma.call.count({ where: { status: CallStatus.IN_PROGRESS } });
+// In‑memory map to track per-call override sequences
+const overrideSeq: Record<string, CallStatus[]> = {};
+
+// Helper to re‑enqueue a call
+async function enqueueCall(call: Call) {
+    await kafkaProducer.send({
+        topic: 'call-requests',
+        messages: [{ value: JSON.stringify(call) }],
+    });
+    console.log(`🔄 Re‑enqueued call ${call.id}`);
+}
+
+// Utility delay
+function delay(ms: number) {
+    return new Promise((res) => setTimeout(res, ms));
 }
 
 async function processCall(call: Call): Promise<void> {
     const lockKey = `lock:${call.to}`;
-    const result = await redis.set(lockKey, call.id, { NX: true, EX: REDIS_LOCK_TTL_SEC });
+    let newAttempts = 0;
 
-    if (result !== 'OK') {
-        console.log(`🔒 Phone ${call.to} already locked. Skipping.`);
+    // 1) Acquire per‑phone lock
+    const locked = await redisClient.set(lockKey, call.id, { NX: true, EX: LOCK_TTL_SEC });
+    if (locked !== 'OK') {
+        console.log(`🔒 ${call.to} is locked; skipping ${call.id}`);
         return;
     }
-
-    console.log(`✅ Locked phone ${call.to} for call ${call.id}`);
+    console.log(`✅ Locked ${call.to} for call ${call.id}`);
 
     try {
-        // Simulate call accepted
-        await prisma.call.update({
+        // 2) Mark IN_PROGRESS & bump attempts, get updated record
+        const updatedCall = await prisma.call.update({
             where: { id: call.id },
             data: {
                 status: CallStatus.IN_PROGRESS,
                 startedAt: new Date(),
+                attempts: call.attempts + 1,
             },
         });
+        newAttempts = updatedCall.attempts;
+        console.log(`📤 Call ${call.id} picked up (attempt ${newAttempts}/3)`);
 
-        console.log(`[SIMULATION] Call ${call.id} marked as IN_PROGRESS`);
+        // 3) Simulate fixed 20s call duration
+        await delay(20_000);
 
-
-        // Determine the next status to simulate
+        // 4) Determine simulated status by phone override or random fallback
         let simulatedStatus: CallStatus;
-        const ov = call.metadata?.override as string | undefined;
-        if (ov) {
-            // initialize the sequence on first hit
-            if (!overrideSequences[call.id]) {
-                overrideSequences[call.id] = ov === 'FAIL_THEN_SUCCESS'
-                    ? ['FAILED', 'FAILED', 'COMPLETED']
-                    : ov === 'PERM_FAIL'
-                        ? ['FAILED', 'FAILED', 'FAILED']
-                        : ['COMPLETED'];
+        if (FAIL_THEN_SUCCESS_NUMBERS.has(call.to)) {
+            if (!overrideSeq[call.id]) {
+                overrideSeq[call.id] = [
+                    CallStatus.FAILED,
+                    CallStatus.FAILED,
+                    CallStatus.COMPLETED,
+                ];
             }
-            simulatedStatus = overrideSequences[call.id].shift()!;
+            simulatedStatus = overrideSeq[call.id].shift()!;
+        } else if (PERM_FAIL_NUMBERS.has(call.to)) {
+            if (!overrideSeq[call.id]) {
+                overrideSeq[call.id] = [
+                    CallStatus.FAILED,
+                    CallStatus.FAILED,
+                    CallStatus.FAILED,
+                ];
+            }
+            simulatedStatus = overrideSeq[call.id].shift()!;
         } else {
-            // fallback to random as before
-            const pool: CallStatus[] = ['COMPLETED', 'FAILED', 'BUSY', 'NO_ANSWER'];
+            const pool: CallStatus[] = [
+                CallStatus.COMPLETED,
+                CallStatus.FAILED,
+                CallStatus.BUSY,
+                CallStatus.NO_ANSWER,
+            ];
             simulatedStatus = pool[Math.floor(Math.random() * pool.length)];
         }
 
-
-        // Fake callback delay
-        setTimeout(async () => {
-            const statusPool: CallStatus[] = ['COMPLETED', 'FAILED', 'BUSY', 'NO_ANSWER'];
-            const simulatedStatus = statusPool[Math.floor(Math.random() * statusPool.length)];
-
+        // 5) If COMPLETED, invoke callback; else throw to trigger retry
+        if (simulatedStatus === CallStatus.COMPLETED) {
             const payload: CallStatusPayload = {
                 callId: call.id,
                 status: simulatedStatus,
-                ...(simulatedStatus === 'COMPLETED' || simulatedStatus === 'FAILED'
-                    ? { durationSec: 20 }
-                    : {}),
+                durationSec: 20,
                 completedAt: new Date().toISOString(),
             };
-
-            try {
-                console.log(`[SIMULATION] Sending callback for ${call.id} with status: ${payload.status}`);
-                await axios.post(`${CALLBACK_BASE_URL}/call-status`, payload);
-
-                await kafkaProducer.send({
-                    topic: 'call-status-updates',
-                    messages: [{ value: JSON.stringify(payload) }],
-                });
-
-                console.log(`[SIMULATION] Kafka message produced for call ${call.id}`);
-            } catch (err) {
-                console.error(`[SIMULATION ERROR] Callback/Kafka failed for ${call.id}:`, err);
-            } finally {
-                // Done with this phone call — release lock
-                await redis.del(lockKey);
-            }
-
-        }, 20_000);
-    } catch (err) {
-        const attempts = call.attempts + 1;
-        const isFinal = attempts >= 3;
-        const error = (err as Error).message;
-
-        console.error(`❌ Error processing call ${call.id}: ${error}`);
-
-        await prisma.call.update({
-            where: { id: call.id },
-            data: {
-                status: isFinal ? CallStatus.FAILED : CallStatus.PENDING,
-                attempts,
-                lastError: error,
-                ...(isFinal && { endedAt: new Date() }),
-            },
-        });
-
-        if (!isFinal) {
-            await kafkaProducer.send({
-                topic: 'call-requests',
-                messages: [{ value: JSON.stringify({ ...call, attempts }) }],
-            });
-            console.log(`🔄 Re‑queued call ${call.id} (attempt ${attempts})`);
+            console.log(`[SIM] Call ${call.id} → COMPLETED; invoking callback`);
+            await axios.post(CALLBACK_URL, payload);
+        } else {
+            throw new Error(`Simulated ${simulatedStatus}`);
         }
 
+    } catch (err: any) {
+        // 6) Retry logic
+        const isFinal = newAttempts >= 3;
+        const errorMsg = err.message || 'Unknown error';
+
+        if (!isFinal) {
+            console.log(`🔄 Call ${call.id} failed on attempt ${newAttempts}/3: ${errorMsg}`);
+            // Reset to PENDING
+            await prisma.call.update({
+                where: { id: call.id },
+                data: { status: CallStatus.PENDING, lastError: errorMsg },
+            });
+            // Back‑off then re‑enqueue
+            setTimeout(() => enqueueCall({ ...call, attempts: newAttempts }), 5000 * newAttempts);
+        } else {
+            console.log(`❌ Call ${call.id} permanently failed on attempt ${newAttempts}/3`);
+            await prisma.call.update({
+                where: { id: call.id },
+                data: {
+                    status: CallStatus.FAILED,
+                    lastError: errorMsg,
+                    endedAt: new Date(),
+                },
+            });
+        }
+
+    } finally {
+        // 7) Release the lock
+        await redisClient.del(lockKey);
+        console.log(`🔓 Released lock for ${call.to}`);
     }
 }
 
-async function runWorkerLoop() {
 
+/** Bootstraps Redis, Kafka, and starts consuming */
+async function runWorkerLoop() {
     try {
         await initRedis();
-        console.log('✅ [Worker] Redis connected');
+        console.log('✅ Redis connected');
 
         await startKafkaProducer();
         await startKafkaConsumer();
-        await kafkaConsumer.subscribe({ topic: 'call-requests', fromBeginning: true });
+
+        // Consume from beginning so you can replay old tests too
+        await kafkaConsumer.subscribe({
+            topic: 'call-requests',
+            fromBeginning: true,
+        });
 
         await kafkaConsumer.run({
-            // allow up to MAX_CONCURRENT_CALLS in parallel:
-            partitionsConsumedConcurrently: MAX_CONCURRENT_CALLS, eachMessage: async ({ message }) => {
-                const raw = message.value?.toString();
-                if (!raw) return;
+            partitionsConsumedConcurrently: MAX_CONCURRENT_CALLS,
+            eachMessage: async ({ message }) => {
+                if (!message.value) return;
+                const call: Call = JSON.parse(message.value.toString());
 
-                console.log(`📥 Received message: ${raw}`);
-
-                try {
-                    const call = JSON.parse(raw);
-
-                    const activeCount = await getActiveCallCount();
-                    if (activeCount >= MAX_CONCURRENT_CALLS) {
-                        console.log(`⏳ Max concurrency reached. Skipping call ${call.id}`);
-                        return;
-                    }
-
-                    await processCall(call);
-                } catch (err) {
-                    console.error('❌ Failed to handle message:', err);
+                // DB‑level concurrency guard (extra safety)
+                const inProg = await prisma.call.count({
+                    where: { status: CallStatus.IN_PROGRESS },
+                });
+                if (inProg >= MAX_CONCURRENT_CALLS) {
+                    console.log(`⏳ Max concurrency reached; re‑enqueuing ${call.id}`);
+                    return enqueueCall(call);
                 }
+
+                console.log(`📥 Processing call ${call.id}`);
+                await processCall(call);
             },
         });
 
-        console.log('👷 Kafka consumer running for call-requests...');
+        console.log('👷 Worker is running');
     } catch (err) {
         console.error('🔥 Worker failed to start:', err);
         process.exit(1);
     }
 }
-
 
 runWorkerLoop();
