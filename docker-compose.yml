@@ -121,6 +121,12 @@ services:
       CALLBACK_BASE_URL: http://api:3000/api/v1/callbacks
       AI_PROVIDER_URL: http://api:3000/api/v1/mock-provider
       MAX_CONCURRENT_CALLS: 30
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 volumes:
   db_data:

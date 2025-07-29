@@ -65,6 +65,9 @@ async function processCall(call: Call): Promise<void> {
                 console.log(`[SIMULATION] Kafka message produced for call ${call.id}`);
             } catch (err) {
                 console.error(`[SIMULATION ERROR] Callback/Kafka failed for ${call.id}:`, err);
+            } finally {
+                // Done with this phone call — release lock
+                await redis.del(lockKey);
             }
 
         }, 20_000);
@@ -85,9 +88,13 @@ async function processCall(call: Call): Promise<void> {
             },
         });
 
-    } finally {
-        // Done with this phone call — release lock
-        await redis.del(lockKey);
+        if (!isFinal) {
+            await kafkaProducer.send({
+                topic: 'call-requests',
+                messages: [{ value: JSON.stringify(call) }],
+            });
+        }
+
     }
 }
 
@@ -99,7 +106,7 @@ async function runWorkerLoop() {
 
         await startKafkaProducer();
         await startKafkaConsumer();
-        await kafkaConsumer.subscribe({ topic: 'call-requests' });
+        await kafkaConsumer.subscribe({ topic: 'call-requests', fromBeginning: true });
 
         await kafkaConsumer.run({
             // allow up to MAX_CONCURRENT_CALLS in parallel:
