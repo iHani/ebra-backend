@@ -55,6 +55,9 @@ curl -X POST http://localhost:3000/api/v1/calls \
 
 ```bash
 curl http://localhost:3000/api/v1/metrics
+// or
+curl -s http://localhost:3000/api/v1/metrics | python -m json.tool
+
 ```
 
 ```json
@@ -67,3 +70,10 @@ curl http://localhost:3000/api/v1/metrics
 }
 ```
 
+#### Database GUI
+
+Run prisma studio 
+
+```bash
+docker-compose run --rm -p 5555:5555 api npx prisma studio
+```
