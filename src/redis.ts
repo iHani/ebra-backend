@@ -1,27 +1,19 @@
 // src/redis.ts
 import { createClient } from 'redis';
 
-const redis = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:6379`,
-});
+const raw = process.env.REDIS_URL ?? 'localhost:6379';
+// if it already starts with "redis://", use as‑is; otherwise prefix it
+const url = raw.startsWith('redis://') ? raw : `redis://${raw}`;
 
-redis.on('error', (err) => console.error('[REDIS ERROR]', err));
+const client = createClient({ url });
+client.on('error', err => console.error('🔴 Redis error:', err));
 
-export async function initRedis(retries = 5, delayMs = 2000): Promise<void> {
-    for (let i = 0; i < retries; i++) {
-        try {
-            if (!redis.isOpen) {
-                await redis.connect();
-            }
-            console.log('✅ Redis connected');
-            return;
-        } catch (err) {
-            console.warn(`[Redis] Retry ${i + 1}/${retries}...`);
-            if (i === retries - 1) throw err;
-            await new Promise((res) => setTimeout(res, delayMs));
-        }
+export async function initRedis() {
+    if (!client.isOpen) {
+        await client.connect();
+        console.log('✅ Redis connected to', url);
     }
 }
 
+export default client;
 
-export default redis;

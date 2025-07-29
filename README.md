@@ -29,8 +29,8 @@ Run the full stack with a single command:
 
 ```bash
 docker-compose up --build
-# then
-docker-compose run --rm api npx prisma migrate deploy
+# after seeing the api container up and running, do:
+docker-compose exec api npx prisma migrate dev --name init
 ```
 
 
@@ -52,6 +52,7 @@ curl -X POST http://localhost:3000/api/v1/calls \
 
 
 ### Get Call Metrics
+displays the number of calls in each status- refreshed every second
 
 ```bash
 curl http://localhost:3000/api/v1/metrics
@@ -77,3 +78,70 @@ Run prisma studio
 ```bash
 docker-compose run --rm -p 5555:5555 api npx prisma studio
 ```
+
+
+Live‑Updating Metrics Using a Bash Loop + Python
+
+```bash
+while true; do
+  clear
+  echo "=== Metrics @ $(date '+%T') ==="
+  curl -s http://localhost:3000/api/v1/metrics | python -m json.tool
+  sleep 1
+done
+```
+
+Bulk Stress Test (100 Calls)
+
+```bash
+for i in $(seq 1 100); do
+  curl -s -X POST http://localhost:3000/api/v1/calls \
+       -H "Content-Type: application/json" \
+       -d '{
+             "to": "+96650'"$(printf "%05d" $i)"'",
+             "scriptId": "stressTest"
+           }' \
+    &   # background each request
+done
+wait
+```
+
+# 1. Successful call
+
+```bash
+curl -s -X POST http://localhost:3000/api/v1/calls/demo \
+     -H "Content-Type: application/json" \
+     -d '{
+           "to": "+966501234567",
+           "scriptId": "testFlow",
+           "metadata": { "override": "FORCE_SUCCESS" }
+         }' \
+| python -m json.tool
+```
+
+# 2. Retry‑then‑success
+```bash
+curl -s -X POST http://localhost:3000/api/v1/calls/demo \
+     -H "Content-Type: application/json" \
+     -d '{
+           "to": "+966501234568",
+           "scriptId": "testFlow",
+           "metadata": { "override": "FORCE_FAIL_THEN_SUCCESS" }
+         }' \
+| python -m json.tool
+```
+
+
+# 3. Permanent‑failure → replacement
+```bash
+curl -s -X POST http://localhost:3000/api/v1/calls/demo \
+     -H "Content-Type: application/json" \
+     -d '{
+           "to": "+966501234569",
+           "scriptId": "testFlow",
+           "metadata": { "override": "FORCE_PERMANENT_FAILURE" }
+         }' \
+| python -m json.tool
+```
+
+

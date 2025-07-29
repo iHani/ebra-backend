@@ -1,8 +1,8 @@
 // src/jobs/worker.ts
 import { PrismaClient, Call, CallStatus } from '@prisma/client';
 import axios from 'axios';
-import redis from '../redis';
-import kafka, { kafkaProducer } from '../kafka';
+import redis, { initRedis } from '../redis';
+import { kafkaConsumer, kafkaProducer, startKafkaConsumer, startKafkaProducer } from '../kafka';
 import { CallStatusPayload } from '../types';
 
 const prisma = new PrismaClient();
@@ -66,7 +66,8 @@ async function processCall(call: Call): Promise<void> {
             } catch (err) {
                 console.error(`[SIMULATION ERROR] Callback/Kafka failed for ${call.id}:`, err);
             }
-        }, 1500);
+
+        }, 20_000);
     } catch (err) {
         const attempts = call.attempts + 1;
         const isFinal = attempts >= 3;
@@ -84,27 +85,25 @@ async function processCall(call: Call): Promise<void> {
             },
         });
 
+    } finally {
+        // Done with this phone call — release lock
         await redis.del(lockKey);
     }
 }
 
-export async function runWorkerLoop(): Promise<void> {
-    const consumer = kafka.consumer({ groupId: 'call-workers' });
+async function runWorkerLoop() {
 
     try {
-        console.log('🔌 Connecting to Redis...');
-        await redis.connect();
-        console.log('✅ Redis connected.');
+        await initRedis();
+        console.log('✅ [Worker] Redis connected');
 
-        console.log('📡 Connecting Kafka consumer...');
-        await consumer.connect();
-        console.log('✅ Kafka consumer connected.');
+        await startKafkaProducer();
+        await startKafkaConsumer();
+        await kafkaConsumer.subscribe({ topic: 'call-requests' });
 
-        await consumer.subscribe({ topic: 'call-requests', fromBeginning: false });
-        console.log('📨 Subscribed to topic: call-requests');
-
-        await consumer.run({
-            eachMessage: async ({ message }) => {
+        await kafkaConsumer.run({
+            // allow up to MAX_CONCURRENT_CALLS in parallel:
+            partitionsConsumedConcurrently: MAX_CONCURRENT_CALLS, eachMessage: async ({ message }) => {
                 const raw = message.value?.toString();
                 if (!raw) return;
 

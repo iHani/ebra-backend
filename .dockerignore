@@ -1,0 +1,40 @@
+# Node modules
+
+node\_modules
+
+# Logs
+
+npm-debug.log\*
+yarn-debug.log\*
+yarn-error.log\*
+\*.log
+
+# Build output
+
+dist
+build
+coverage
+
+# Local environment files
+
+.env
+.env.\*.local
+
+# Docker files
+
+Dockerfile\*
+docker-compose\*.yml
+
+# Git metadata
+
+.git
+.gitignore
+
+# TypeScript build cache
+
+\*.tsbuildinfo
+
+# OS files
+
+.DS\_Store
+Thumbs.db

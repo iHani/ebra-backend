@@ -10,7 +10,8 @@ import { startKafkaProducer } from './kafka';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+// Ensure PORT is a number
+const PORT: number = parseInt(process.env.PORT ?? '3000', 10);
 
 app.use(express.json());
 
@@ -24,21 +25,23 @@ app.use('/api/v1/calls', callsRouter);
 app.use('/api/v1/metrics', metricsRouter);
 app.use('/api/v1/callbacks', callbacksRouter);
 
-startKafkaProducer()
-    .catch((err) => {
-        console.error('[Kafka] Final failure after retries:', err);
-        process.exit(1);
-    });
+// Bootstrap Kafka and Redis before starting HTTP server
+async function bootstrap() {
+    try {
+        await startKafkaProducer();
+        console.log('✅ Kafka producer connected');
 
+        await initRedis();
+        console.log('✅ Redis connected');
 
-// Start server after Redis is ready
-initRedis()
-    .then(() => {
-        app.listen(PORT, () => {
-            console.log(`🚀 Server ready at http://localhost:${PORT}`);
+        // Explicitly bind to 0.0.0.0 for Docker
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`🚀 Server ready at http://0.0.0.0:${PORT}`);
         });
-    })
-    .catch((err) => {
-        console.error('❌ Failed to connect to Redis:', err);
+    } catch (err) {
+        console.error('❌ Bootstrap failed:', err);
         process.exit(1);
-    });
+    }
+}
+
+bootstrap();
