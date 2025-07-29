@@ -90,7 +90,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
       KAFKA_BROKER: kafka:9092
-      CALLBACK_BASE_URL: http://api:3000/api/v1
+      CALLBACK_BASE_URL: http://api:3000/api/v1/callbacks
       AI_PROVIDER_URL: http://api:3000/api/v1/mock-provider
 
   worker:
@@ -118,7 +118,7 @@ services:
       - .env.docker
     environment:
       KAFKA_BROKER: kafka:9092
-      CALLBACK_BASE_URL: http://api:3000/api/v1
+      CALLBACK_BASE_URL: http://api:3000/api/v1/callbacks
       AI_PROVIDER_URL: http://api:3000/api/v1/mock-provider
       MAX_CONCURRENT_CALLS: 30
 
