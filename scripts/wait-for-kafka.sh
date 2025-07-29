@@ -1,12 +1,11 @@
 #!/bin/sh
 
-# Wait until api container is up and running
-echo "⏳ Waiting for api to be ready..."
+# Wait until Kafka is ready
+echo "⏳ Waiting for Kafka to be ready..."
 
-while ! nc -z api 9092; do
+while ! nc -z kafka 9092; do
   sleep 1
 done
 
-echo "✅ api is ready. Starting worker..."
+echo "✅ Kafka is ready. Starting worker..."
 exec "$@"
-
