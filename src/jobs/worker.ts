@@ -10,9 +10,11 @@ import {
 } from '../kafka';
 import type { CallStatusPayload } from '../types';
 
+
 const prisma = new PrismaClient();
 
 const MAX_CONCURRENT_CALLS = 30;
+
 const FAIL_THEN_SUCCESS_NUMBERS = new Set(['+966-FAIL_THEN_SUCCESS_NUMBERS']);
 const PERM_FAIL_NUMBERS = new Set(['+966-PERM_FAIL_NUMBERS']);
 const LOCK_TTL_SEC = 300; // seconds
@@ -141,46 +143,60 @@ async function processCall(call: Call): Promise<void> {
 }
 
 
-/** Bootstraps Redis, Kafka, and starts consuming */
+let activeCalls = 0;
+
 async function runWorkerLoop() {
     try {
         await initRedis();
         console.log('✅ Redis connected');
 
         await startKafkaProducer();
+        console.log('✅ Kafka producer connected');
         await startKafkaConsumer();
+        console.log('✅ Kafka consumer connected');
 
-        // Consume from beginning so you can replay old tests too
-        await kafkaConsumer.subscribe({
-            topic: 'call-requests',
-            fromBeginning: true,
-        });
+        // bootstrap from the DB on startup
+        const pendingCalls = await prisma.call.findMany({ where: { status: CallStatus.PENDING } });
+        console.log(`♻️ Bootstrapping ${pendingCalls.length} pending calls into Kafka…`);
+        for (const call of pendingCalls) {
+            await enqueueCall(call);
+        }
+
+        await kafkaConsumer.subscribe({ topic: 'call-requests', fromBeginning: true });
 
         await kafkaConsumer.run({
-            partitionsConsumedConcurrently: MAX_CONCURRENT_CALLS,
             eachMessage: async ({ message }) => {
                 if (!message.value) return;
                 const call: Call = JSON.parse(message.value.toString());
 
-                // DB‑level concurrency guard (extra safety)
-                const inProg = await prisma.call.count({
-                    where: { status: CallStatus.IN_PROGRESS },
-                });
-                if (inProg >= MAX_CONCURRENT_CALLS) {
-                    console.log(`⏳ Max concurrency reached; re‑enqueuing ${call.id}`);
+                // 1) Concurrency guard
+                if (activeCalls >= MAX_CONCURRENT_CALLS) {
+                    console.log(`⏳ Concurrency full; re‑enqueuing ${call.id}`);
                     return enqueueCall(call);
                 }
 
-                console.log(`📥 Processing call ${call.id}`);
-                await processCall(call);
+                // 2) Book a slot
+                activeCalls++;
+                console.log(`🔢 Active calls: ${activeCalls}/${MAX_CONCURRENT_CALLS}`);
+
+                // 3) Fire off the work (no await) and free the slot when done
+                processCall(call)
+                    .catch(err =>
+                        console.error(`⚠️ Unhandled processCall(${call.id}) error:`, err)
+                    )
+                    .finally(() => {
+                        activeCalls--;
+                        console.log(`➖ Slot freed; active calls: ${activeCalls}`);
+                    });
             },
         });
 
-        console.log('👷 Worker is running');
+        console.log(`👷 Worker running (≤${MAX_CONCURRENT_CALLS} concurrent)`);
     } catch (err) {
         console.error('🔥 Worker failed to start:', err);
         process.exit(1);
     }
 }
+
 
 runWorkerLoop();
