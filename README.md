@@ -2,6 +2,35 @@
 
 A backend service that manages AI-driven phone call requests using Kafka, Redis, and Prisma.
 
+## Directory Structure
+
+Directory Structure:
+
+```
+  └── ./
+    ├── prisma
+    │   └── schema.prisma
+    ├── scripts
+    │   ├── wait-for-api.sh
+    │   └── wait-for-kafka.sh
+    ├── src
+    │   ├── api
+    │   │   ├── callbacks.ts
+    │   │   ├── calls.ts
+    │   │   └── metrics.ts
+    │   ├── jobs
+    │   │   └── worker.ts
+    │   ├── db.ts
+    │   ├── kafka.ts
+    │   ├── redis.ts
+    │   └── server.ts
+    ├── docker-compose.yml
+    ├── Dockerfile
+    ├── package.json
+    ├── README.md
+    └── ...
+```
+
 ## Getting Started
 
 1. **Build & run services**
@@ -45,6 +74,16 @@ curl -X POST http://localhost:3000/api/v1/calls \
   -H "Content-Type: application/json" \
   -d '{"to":"+966501234567","scriptId":"welcomeFlow"}'
 ```
+
+* **Completed from the start**
+
+```bash
+curl -s -X POST http://localhost:3000/api/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+966-SUCCESS_NUMBERS","scriptId":"stressTest"}' \
+  | python -m json.tool
+```
+
 
 * **Fail‑twice → succeed**
 

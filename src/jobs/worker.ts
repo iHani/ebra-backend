@@ -14,7 +14,7 @@ import type { CallStatusPayload } from '../types';
 const prisma = new PrismaClient();
 
 const MAX_CONCURRENT_CALLS = 30;
-
+const SUCCESS_NUMBERS = new Set(['+966-SUCCESS_NUMBERS']);
 const FAIL_THEN_SUCCESS_NUMBERS = new Set(['+966-FAIL_THEN_SUCCESS_NUMBERS']);
 const PERM_FAIL_NUMBERS = new Set(['+966-PERM_FAIL_NUMBERS']);
 const LOCK_TTL_SEC = 300; // seconds
@@ -67,7 +67,9 @@ async function processCall(call: Call): Promise<void> {
 
         // 4) Determine simulated status by phone override or random fallback
         let simulatedStatus: CallStatus;
-        if (FAIL_THEN_SUCCESS_NUMBERS.has(call.to)) {
+        if (SUCCESS_NUMBERS.has(call.to)) {
+            simulatedStatus = CallStatus.COMPLETED;
+        } else if (FAIL_THEN_SUCCESS_NUMBERS.has(call.to)) {
             if (!overrideSeq[call.id]) {
                 overrideSeq[call.id] = [
                     CallStatus.FAILED,
@@ -86,6 +88,7 @@ async function processCall(call: Call): Promise<void> {
             }
             simulatedStatus = overrideSeq[call.id].shift()!;
         } else {
+            // random fallback
             const pool: CallStatus[] = [
                 CallStatus.COMPLETED,
                 CallStatus.FAILED,
