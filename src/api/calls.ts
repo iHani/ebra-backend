@@ -4,7 +4,6 @@ import prisma from '../db';
 import { CreateCallInput, UpdateCallPayload, CallQuery } from '../types';
 import { CallStatus } from '@prisma/client';
 import kafka from '../kafka';
-import { applyOverride } from '../utils/overrideHandler';
 
 const router = Router();
 
@@ -19,12 +18,6 @@ router.post('/', async (req: Request<{}, {}, CreateCallInput>, res: Response) =>
         data: { to, scriptId, metadata, status: 'PENDING', attempts: 0 },
     });
     console.log(`[CREATE] Call ${call.id} created`);
-
-    // Check for overrides values for testing
-    const override = await applyOverride(call);
-    if (override) {
-        return res.status(override.statusCode).json(override.payload);
-    }
 
     const producer = kafka.producer();
     await producer.connect();
