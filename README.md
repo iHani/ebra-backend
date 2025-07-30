@@ -1,84 +1,79 @@
 # Ebra Call Orchestrator
 
-A backend service that manages AI-driven phone call requests. It provides:
-
-- A REST API to enqueue call jobs
-- A background worker to invoke an external AI call provider
-- A webhook receiver for call status updates
-- A metrics endpoint for real-time service visibility
-- A Redis cache for locking phone numbers
-- A Kafka queue for receiving call requests
-
----
-
-## Tech Stack
-
-- Node.js (TypeScript)
-- Express.js
-- PostgreSQL
-- Prisma ORM
-- Docker & Docker Compose
-- Redis
-- Kafka
-
----
+A backend service that manages AI-driven phone call requests using Kafka, Redis, and Prisma.
 
 ## Getting Started
 
-Run the full stack with a single command:
+1. **Build & run services**
 
-```bash
-docker-compose up --build
-# after seeing the api container up and running, do:
-docker-compose exec api npx prisma migrate dev --name init
-```
+   ```bash
+   docker-compose up --build -d
+   ```
 
+2. **Apply database migrations**
 
-Check server health http://localhost:3000/health
+   ```bash
+   docker-compose exec api npx prisma migrate dev --name init
+   ```
 
+3. **Restart services**
 
-### Create a Call
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Verify health**
+
+   ```bash
+   curl http://localhost:3000/health
+   ```
+
+5. **View metrics**
+
+   ```bash
+   curl -s http://localhost:3000/api/v1/metrics | python -m json.tool
+   ```
+
+## API Usage
+
+* **Enqueue a call**
+
+This call will randomly pick any status, if not `COMPLETED`, then it will be proceeced again "up to 3 times" till it ends up either in `COMPLETED` or `FAILED`.
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/calls \
   -H "Content-Type: application/json" \
-  -d '{
-    "to": "+966501234567",
-    "scriptId": "welcomeFlow",
-    "metadata": { "customerId": "12345" }
-  }'
+  -d '{"to":"+966501234567","scriptId":"welcomeFlow"}'
+```
 
+* **Fail‑twice → succeed**
+
+```bash
+curl -s -X POST http://localhost:3000/api/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+966-FAIL_THEN_SUCCESS_NUMBERS","scriptId":"stressTest"}' \
+  | python -m json.tool
   ```
 
-
-### Get Call Metrics
-displays the number of calls in each status- refreshed every second
+* **Permanent failure**
 
 ```bash
-curl http://localhost:3000/api/v1/metrics
-// or
-curl -s http://localhost:3000/api/v1/metrics | python -m json.tool
-
+curl -s -X POST http://localhost:3000/api/v1/calls \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+966-PERM_FAIL_NUMBERS","scriptId":"stressTest"}' \
+  | python -m json.tool
 ```
 
-```json
-{
-  "PENDING": 2,
-  "IN_PROGRESS": 1,
-  "COMPLETED": 4,
-  "FAILED": 0,
-  "EXPIRED": 0
-}
-```
-
-#### Database GUI
-
-Run prisma studio 
+## Stress Testing
 
 ```bash
-docker-compose run --rm -p 5555:5555 api npx prisma studio
+for i in $(seq 1 100); do
+  curl -s -o /dev/null -X POST http://localhost:3000/api/v1/calls \
+       -H "Content-Type: application/json" \
+       -d "{\"to\":\"+96650$(printf '%05d' $i)\",\"scriptId\":\"stressTest\"}" &
+done
+wait
 ```
-
 
 Live‑Updating Metrics Using a Bash Loop + Python
 
@@ -90,43 +85,3 @@ while true; do
   sleep 1
 done
 ```
-
-Bulk Stress Test (100 Calls)
-
-```bash
-for i in $(seq 1 100); do
-  curl -s -X POST http://localhost:3000/api/v1/calls \
-       -H "Content-Type: application/json" \
-       -d '{
-             "to": "+96650'"$(printf "%05d" $i)"'",
-             "scriptId": "stressTest"
-           }' \
-    &   # background each request
-done
-wait
-```
-
-# 1) Immediate success
-curl -s -X POST http://localhost:3000/api/v1/calls \
-  -H "Content-Type: application/json" \
-  -d '{"to":"+966501234567","scriptId":"stressTest","metadata":{"override":"FORCE_SUCCESS"}}' \
-| python -m json.tool
-
-# 2) Two fails then success (Wait ~45 s for the two 20 s retries to run through before checking its final state.)
-
-curl -s -X POST http://localhost:3000/api/v1/calls \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "+966-FAIL_THEN_SUCCESS_NUMBERS",
-    "scriptId": "stressTest"
-  }' | python -m json.tool
-
-
-# 3) Permanent failure
-curl -s -X POST http://localhost:3000/api/v1/calls \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "+966-PERM_FAIL_NUMBERS",
-    "scriptId": "stressTest"
-  }' | python -m json.tool
-
